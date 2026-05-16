@@ -100,6 +100,11 @@ def _make_app(*, engine=None, extractor=None) -> tuple[SomaApp, Path]:
         telegram_token="test-token",
         telegram_user_id=1,
         data_dir=tmp_dir,
+        # Disabled — the real curator's constructor lazy-imports
+        # agent.auxiliary_client, which transitively pulls httpx; that's
+        # fine in production but not in the hermetic test env. Curator
+        # behaviour is covered end-to-end in tests/soma/test_curator.py.
+        enable_curator=False,
     )
     embedder = _DictEmbedder()
     store = MemoryStore(tmp_dir / "memories.jsonl", embedder)
@@ -237,6 +242,31 @@ class SomaAppPipelineTest(unittest.TestCase):
 
         reply = asyncio.run(scenario())
         self.assertEqual(reply, "the answer is 42")
+
+    def test_curator_wired_when_injected(self):
+        tmp_dir = Path(tempfile.mkdtemp(prefix="soma_test_"))
+        self.addCleanup(_cleanup, tmp_dir)
+        config = SomaConfig(
+            telegram_token="test-token",
+            telegram_user_id=1,
+            data_dir=tmp_dir,
+            enable_curator=False,
+        )
+        fake_curator = object()  # any sentinel — SomaApp only stores it
+        app = SomaApp(
+            config,
+            engine=_FakeEngine(),
+            embedder=_DictEmbedder(),
+            store=MemoryStore(tmp_dir / "memories.jsonl", _DictEmbedder()),
+            extractor=_FakeExtractor(),
+            context_builder=ContextBuilder(
+                MemoryStore(tmp_dir / "memories.jsonl", _DictEmbedder())
+            ),
+            events=EventLog(tmp_dir / "events.jsonl"),
+            transport=_FakeTransport(),
+            curator=fake_curator,
+        )
+        self.assertIs(app.curator, fake_curator)
 
 
 if __name__ == "__main__":

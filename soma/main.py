@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from .context_builder import ContextBuilder
+from .curator import Curator
 from .embed import OllamaEmbedder
 from .engine import EngineConfig, SomaEngine
 from .events import (
@@ -51,6 +52,7 @@ class SomaConfig:
     debounce_seconds: float = 3.0
     strip_markdown: bool = False
     max_reply_chars: int = 4000
+    enable_curator: bool = True
 
     @classmethod
     def from_env(cls) -> "SomaConfig":
@@ -60,12 +62,14 @@ class SomaConfig:
             raise RuntimeError("TELEGRAM_TOKEN is required")
         if not user_id.isdigit():
             raise RuntimeError("TELEGRAM_USER_ID must be a numeric Telegram user id")
+        enable_curator = os.environ.get("SOMA_ENABLE_CURATOR", "1").strip()
         return cls(
             telegram_token=token,
             telegram_user_id=int(user_id),
             data_dir=Path(os.environ.get("SOMA_DATA_DIR", "data/soma")),
             model=os.environ.get("SOMA_MODEL") or None,
             debounce_seconds=float(os.environ.get("SOMA_DEBOUNCE_SECS", "3.0")),
+            enable_curator=enable_curator not in ("0", "false", "False", ""),
         )
 
 
@@ -87,6 +91,7 @@ class SomaApp:
         context_builder: Optional[ContextBuilder] = None,
         events: Optional[EventLog] = None,
         transport: Optional[TelegramTransport] = None,
+        curator: Optional[Curator] = None,
     ):
         self.config = config
         config.data_dir.mkdir(parents=True, exist_ok=True)
@@ -103,8 +108,24 @@ class SomaApp:
             on_user_message=self.handle_user_message,
             debounce_seconds=config.debounce_seconds,
         )
+        if curator is not None:
+            self.curator = curator
+        elif config.enable_curator:
+            self.curator = Curator(
+                self.store,
+                self.events,
+                model=config.model,
+                notify=self._curator_notify,
+            )
+        else:
+            self.curator = None
         self._history: List[dict] = []
         self._bg_tasks: set[asyncio.Task] = set()
+
+    async def _curator_notify(self, message: str) -> None:
+        """Default notify callback — delegates to the transport.
+        Phase 6 will swap this for a rate-limited proactive sender."""
+        await self.transport.send(message)
 
     async def handle_user_message(self, text: str) -> Optional[str]:
         await self.events.record_async(EVENT_PROMPT_RECEIVED, text=text)
@@ -177,14 +198,20 @@ class SomaApp:
                 signal.signal(sig, _stop)
 
         transport_task = asyncio.create_task(self.transport.run_forever())
+        curator_task: Optional[asyncio.Task] = None
+        if self.curator is not None:
+            curator_task = asyncio.create_task(self.curator.run())
         try:
             await stop.wait()
         finally:
-            transport_task.cancel()
-            try:
-                await transport_task
-            except (asyncio.CancelledError, Exception):
-                pass
+            for t in (transport_task, curator_task):
+                if t is None:
+                    continue
+                t.cancel()
+                try:
+                    await t
+                except (asyncio.CancelledError, Exception):
+                    pass
             # Wait briefly for background extractions to settle.
             if self._bg_tasks:
                 await asyncio.wait(self._bg_tasks, timeout=10.0)

@@ -242,6 +242,37 @@ class MemoryStore:
                 self._flush()
             return removed
 
+    def get(self, id: str) -> Optional[MemoryRecord]:
+        with self._lock:
+            self._load()
+            for record in self._records:
+                if record.id == id:
+                    return record
+            return None
+
+    def delete(self, id: str) -> bool:
+        with self._lock:
+            self._load()
+            before = len(self._records)
+            self._records = [r for r in self._records if r.id != id]
+            removed = len(self._records) < before
+            if removed:
+                self._flush()
+            return removed
+
+    def delete_many(self, ids: Iterable[str]) -> int:
+        id_set = set(ids)
+        if not id_set:
+            return 0
+        with self._lock:
+            self._load()
+            before = len(self._records)
+            self._records = [r for r in self._records if r.id not in id_set]
+            removed = before - len(self._records)
+            if removed:
+                self._flush()
+            return removed
+
     # -- Internals -----------------------------------------------------------
 
     def _find_duplicate(self, embedding: Sequence[float]) -> Optional[MemoryRecord]:
