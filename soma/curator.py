@@ -38,7 +38,6 @@ from .events import (
     EVENT_BACKGROUND_TICK,
     EVENT_CURATOR_ACTION,
     EVENT_ERROR,
-    EVENT_NOTIFY_SENT,
     EventLog,
 )
 from .memory_extractor import _coerce_json_array  # reuse the forgiving JSON parser
@@ -75,7 +74,11 @@ class CycleResult:
 
 # Optional callbacks the curator delegates to.
 ResearchCallback = Callable[[str], Awaitable[Optional[str]]]
-NotifyCallback = Callable[[str], Awaitable[None]]
+# Returns True if the notification was actually delivered (e.g. the
+# rate limiter let it through). False / None counts as "decided not to
+# send right now" — still a productive decision, but the curator should
+# not claim it sent something it didn't.
+NotifyCallback = Callable[[str], Awaitable[bool]]
 
 
 CURATOR_SYSTEM = """You are Soma's background curator. Soma runs you on a tight
@@ -463,7 +466,7 @@ class Curator:
                 detail={"reason": "no_callback", "message": message},
             )
         try:
-            await self.notify_cb(message)
+            sent = await self.notify_cb(message)
         except Exception as exc:
             logger.warning("soma: notify callback raised: %s", exc)
             return CycleResult(
@@ -471,11 +474,16 @@ class Curator:
                 productive=False,
                 detail={"reason": "callback_error", "error": str(exc)},
             )
-        await self.events.record_async(EVENT_NOTIFY_SENT, message=message)
+        await self.events.record_async(
+            EVENT_CURATOR_ACTION,
+            kind="notify_user",
+            sent=bool(sent),
+            message=message[:200],
+        )
         return CycleResult(
             action="notify_user",
-            productive=True,
-            detail={"message": message},
+            productive=bool(sent),
+            detail={"message": message, "sent": bool(sent)},
         )
 
     # -- Loop pacing ---------------------------------------------------------

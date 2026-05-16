@@ -27,6 +27,9 @@ EVENT_MEMORY_FUSED = "memory_fused"
 EVENT_BACKGROUND_TICK = "background_tick"
 EVENT_CURATOR_ACTION = "curator_action"
 EVENT_NOTIFY_SENT = "notify_sent"
+EVENT_NOTIFY_SKIPPED = "notify_skipped"
+EVENT_NOTIFY_FAILED = "notify_failed"
+EVENT_CRYSTALLIZE = "crystallize"
 EVENT_ERROR = "error"
 
 

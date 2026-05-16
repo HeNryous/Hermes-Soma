@@ -19,7 +19,6 @@ from soma.curator import Curator, CycleResult, _looks_like_inactivity
 from soma.events import (
     EVENT_BACKGROUND_TICK,
     EVENT_CURATOR_ACTION,
-    EVENT_NOTIFY_SENT,
     EventLog,
 )
 from soma.memory_store import MemoryStore
@@ -206,11 +205,12 @@ class NotifyActionTest(unittest.TestCase):
         self.store, self.events, self.tmp = _setup()
         self.addCleanup(_cleanup, self.tmp)
 
-    def test_notify_callback_invoked_and_logged(self):
+    def test_notify_callback_invoked_when_callback_returns_true(self):
         sent: list[str] = []
 
         async def notify(msg):
             sent.append(msg)
+            return True  # The notifier (Phase 6) is responsible for the rate-limit.
 
         raw = '{"action": "notify_user", "message": "Your build is done"}'
         curator = Curator(
@@ -222,8 +222,27 @@ class NotifyActionTest(unittest.TestCase):
         result = asyncio.run(curator.cycle_once())
         self.assertTrue(result.productive)
         self.assertEqual(sent, ["Your build is done"])
-        notif_events = list(self.events.replay(type=EVENT_NOTIFY_SENT))
-        self.assertEqual(len(notif_events), 1)
+        actions = [
+            e for e in self.events.replay(type=EVENT_CURATOR_ACTION)
+            if e.get("kind") == "notify_user"
+        ]
+        self.assertEqual(len(actions), 1)
+        self.assertTrue(actions[0].get("sent"))
+
+    def test_notify_unproductive_when_callback_returns_false(self):
+        async def notify(msg):
+            return False  # rate-limited / suppressed
+
+        raw = '{"action": "notify_user", "message": "Your build is done"}'
+        curator = Curator(
+            self.store,
+            self.events,
+            call_llm=MagicMock(return_value=_fake_response(raw)),
+            notify=notify,
+        )
+        result = asyncio.run(curator.cycle_once())
+        self.assertFalse(result.productive)
+        self.assertFalse(result.detail.get("sent"))
 
 
 class NoneAndUnknownActionTest(unittest.TestCase):
