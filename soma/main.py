@@ -250,13 +250,91 @@ class SomaApp:
 
 
 def main() -> None:
+    import argparse
+    parser = argparse.ArgumentParser(prog="soma", description="Soma — biological cognition layer for Hermes")
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Validate config + imports without booting Telegram; exit 0 if OK",
+    )
+    args = parser.parse_args()
+
     logging.basicConfig(
         level=os.environ.get("SOMA_LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    if args.check:
+        _run_check()
+        return
     config = SomaConfig.from_env()
     app = SomaApp(config)
     asyncio.run(app.run())
+
+
+def _run_check() -> None:
+    """Quick pre-flight: config valid, imports work, deps reachable on paper."""
+    import importlib
+    import sys
+
+    print("soma preflight check")
+    print("=" * 60)
+
+    # 1. Config from env
+    try:
+        config = SomaConfig.from_env()
+        print(f"  config: OK (user={config.telegram_user_id}, "
+              f"data_dir={config.data_dir}, model={config.model or '(hermes default)'})")
+    except RuntimeError as exc:
+        print(f"  config: FAIL — {exc}")
+        sys.exit(2)
+
+    # 2. Critical imports
+    targets = [
+        "telegram",                     # python-telegram-bot
+        "requests",                     # used by embed.py
+        "agent.auxiliary_client",       # used by extractor + curator
+        "run_agent",                    # Hermes AIAgent
+        "soma.engine",
+        "soma.memory_store",
+        "soma.memory_extractor",
+        "soma.context_builder",
+        "soma.curator",
+        "soma.crystallize",
+        "soma.notify",
+        "soma.transport",
+    ]
+    failures: list[str] = []
+    for name in targets:
+        try:
+            importlib.import_module(name)
+            print(f"  import {name}: OK")
+        except Exception as exc:
+            print(f"  import {name}: FAIL — {exc.__class__.__name__}: {exc}")
+            failures.append(name)
+
+    # 3. Ollama reachable?
+    ollama_url = os.environ.get("SOMA_OLLAMA_URL", "http://localhost:11434")
+    try:
+        import requests
+        resp = requests.get(f"{ollama_url}/api/tags", timeout=2.0)
+        resp.raise_for_status()
+        tags = [t.get("name") for t in resp.json().get("models", [])]
+        embed_model = os.environ.get("SOMA_EMBED_MODEL", "nomic-embed-text")
+        present = any(embed_model in t for t in tags if t)
+        flag = "OK" if present else "WARN (embed model not pulled)"
+        print(f"  ollama: {flag} ({len(tags)} models at {ollama_url})")
+        if not present:
+            print(f"          run:  ollama pull {embed_model}")
+    except Exception as exc:
+        print(f"  ollama: WARN — {exc.__class__.__name__}: {exc}")
+        print(f"          run:  ollama serve")
+
+    if failures:
+        print()
+        print(f"FAIL: {len(failures)} import(s) failed: {', '.join(failures)}")
+        sys.exit(1)
+    print()
+    print("OK — soma is ready to start. Run:  python -m soma.main")
 
 
 if __name__ == "__main__":
